@@ -82,6 +82,7 @@ import {
   ModelOrigin,
   ModelType,
   RemoteSessionBinding,
+  SamplerDefaults,
 } from '../utils/types';
 
 import {ErrorState, createErrorState} from '../utils/errors';
@@ -94,7 +95,8 @@ import {
 } from '../utils/deviceCapabilities';
 import {detectThinkingCapability} from '../utils/thinkingCapabilityDetection';
 import {ReasoningCapability} from '../utils/reasoningCapability';
-import {capsMatchBinding} from '../utils/remoteCaps';
+import {toServerType} from '../utils/serverTypes';
+import {capsMatchBinding, resolveRemoteCaps} from '../utils/remoteCaps';
 import {resolveModelCaps} from '../utils/modelCaps';
 import type {CapabilityEnv, ModelCapabilityView} from '../utils/modelCaps';
 import {t} from '../locales';
@@ -193,6 +195,8 @@ class ModelStore {
 
   activeRemoteBinding: RemoteSessionBinding | undefined = undefined;
 
+  private postCompletionProbedBinding: string | undefined = undefined;
+
   lastUsedModelId: string | undefined = undefined;
 
   // Auto-release tracking (persistent)
@@ -247,6 +251,7 @@ class ModelStore {
     makeAutoObservable(this, {
       activeModel: computed,
       activeModelCaps: computed,
+      activeSamplerDefaults: computed,
       contextId: computed,
       remoteModels: computed,
       activeDownloads: computed,
@@ -1221,6 +1226,35 @@ class ModelStore {
     serverStore
       .fetchRemoteModelCaps(model.serverId, model.remoteModelId)
       .catch(() => {});
+  };
+
+  /**
+   * A llama.cpp router proxies GET /props to the model only with autoload on,
+   * so the probe fired at selection time cannot land for a model that is not
+   * resident yet and every capability reads unknown. The first finished
+   * completion is the moment residency is guaranteed, so retry there — once
+   * per binding, and never when the probe already answered for it.
+   */
+  reprobeRemoteCapsAfterCompletion = (): void => {
+    const binding = this.activeRemoteBinding;
+    if (!binding) {
+      return;
+    }
+    const bindingKey = `${binding.modelId}@${binding.url}`;
+    if (this.postCompletionProbedBinding === bindingKey) {
+      return;
+    }
+    if (
+      capsMatchBinding(
+        serverStore.remoteCaps[binding.modelId],
+        binding,
+        binding.modelId,
+      )
+    ) {
+      return;
+    }
+    this.postCompletionProbedBinding = bindingKey;
+    this.reprobeRemoteCapsIfUnknown();
   };
 
   reinitializeContext = async () => {
@@ -2605,6 +2639,17 @@ class ModelStore {
     return this.capsFor(this.activeModel);
   }
 
+  /**
+   * The server's own generation defaults for the live session, for a settings
+   * surface to show alongside the user's values. Undefined when no probe
+   * describes the backend this session is bound to.
+   */
+  get activeSamplerDefaults(): SamplerDefaults | undefined {
+    const env = this.capabilityEnv;
+    return resolveRemoteCaps(this.activeModel, env.remoteCaps, env.binding)
+      .samplerDefaults;
+  }
+
   get lastUsedModel(): Model | undefined {
     return this.lastUsedModelId
       ? this.models.find(m => m.id === this.lastUsedModelId && m.isDownloaded)
@@ -2675,20 +2720,22 @@ class ModelStore {
       throw new Error('Server not found');
     }
 
+    const serverType = toServerType(server.serverType);
+
     runInAction(() => {
-      this.engine = new OpenAICompletionEngine(
-        server.url,
-        model.remoteModelId!,
+      this.engine = new OpenAICompletionEngine({
+        url: server.url,
+        remoteModelId: model.remoteModelId!,
         apiKey,
-        server.requestTimeoutMs,
-        server.serverType,
-      );
+        timeoutMs: server.requestTimeoutMs,
+        serverType,
+      });
       this.activeRemoteBinding = {
         modelId: model.id,
         serverId: model.serverId!,
         remoteModelId: model.remoteModelId!,
         url: server.url,
-        serverType: server.serverType,
+        serverType,
       };
       this.setActiveModel(model.id);
       // Do NOT set lastUsedModelId for remote models -- server may be offline on next launch

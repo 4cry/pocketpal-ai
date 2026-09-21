@@ -397,6 +397,46 @@ describe('ServerDetailsSheet', () => {
     });
   });
 
+  it('refetches the model list when the saved url invalidates discovery', async () => {
+    const {getByTestId} = render(
+      <ServerDetailsSheet
+        isVisible={true}
+        onDismiss={jest.fn()}
+        serverId="srv-1"
+      />,
+    );
+
+    fireEvent.changeText(
+      getByTestId('server-details-url-input'),
+      'http://localhost:5678',
+    );
+    fireEvent.press(getByTestId('save-server-button'));
+
+    await waitFor(() => {
+      expect(serverStore.fetchModelsForServer).toHaveBeenCalledWith('srv-1');
+    });
+  });
+
+  it('leaves the model list alone when the save changes neither url nor type', async () => {
+    const mockDismiss = jest.fn();
+
+    const {getByTestId} = render(
+      <ServerDetailsSheet
+        isVisible={true}
+        onDismiss={mockDismiss}
+        serverId="srv-1"
+      />,
+    );
+
+    fireEvent.changeText(getByTestId('server-details-timeout-input'), '600');
+    fireEvent.press(getByTestId('save-server-button'));
+
+    await waitFor(() => {
+      expect(mockDismiss).toHaveBeenCalled();
+    });
+    expect(serverStore.fetchModelsForServer).not.toHaveBeenCalled();
+  });
+
   it('persists a user-selected serverType on save', async () => {
     const {getByTestId} = render(
       <ServerDetailsSheet

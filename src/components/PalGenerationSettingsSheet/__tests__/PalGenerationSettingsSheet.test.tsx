@@ -3,7 +3,15 @@ import {Alert} from 'react-native';
 import {render, fireEvent, waitFor, act} from '../../../../jest/test-utils';
 
 import {PalGenerationSettingsSheet} from '../PalGenerationSettingsSheet';
-import {chatSessionStore, defaultCompletionSettings} from '../../../store';
+import {runInAction} from 'mobx';
+
+import {
+  chatSessionStore,
+  defaultCompletionSettings,
+  modelStore,
+  serverStore,
+} from '../../../store';
+import {ModelOrigin} from '../../../utils/types';
 import {L10nContext} from '../../../utils';
 import {l10n, t} from '../../../locales';
 import {validateCompletionSettings} from '../../../utils/modelSettings';
@@ -71,6 +79,44 @@ describe('PalGenerationSettingsSheet', () => {
 
       expect(getByTestId('sheet')).toBeTruthy();
       expect(getByTestId('completion-settings')).toBeTruthy();
+    });
+
+    it("never offers the active server's defaults, which govern another model", () => {
+      runInAction(() => {
+        modelStore.models = [
+          {
+            id: 'srv/m',
+            origin: ModelOrigin.REMOTE,
+            serverId: 'srv',
+          } as any,
+        ];
+        modelStore.activeModelId = 'srv/m';
+        serverStore.remoteCaps = {
+          'srv/m': {samplerDefaults: {top_k: 40, min_p: 0.05}},
+        };
+      });
+
+      const {queryByTestId} = render(
+        <L10nContext.Provider value={l10n.en}>
+          <PalGenerationSettingsSheet
+            {...defaultProps}
+            completionSettings={{
+              ...mockCompletionParams,
+              top_k: 40,
+              min_p: 0.3,
+            }}
+          />
+        </L10nContext.Provider>,
+      );
+
+      expect(queryByTestId('top_k-server-default')).toBeNull();
+      expect(queryByTestId('min_p-server-default-reset')).toBeNull();
+
+      runInAction(() => {
+        modelStore.models = [];
+        modelStore.activeModelId = undefined;
+        serverStore.remoteCaps = {};
+      });
     });
 
     it('does not render when not visible', () => {

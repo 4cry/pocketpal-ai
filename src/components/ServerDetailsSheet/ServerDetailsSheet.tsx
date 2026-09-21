@@ -23,7 +23,11 @@ import {useTheme} from '../../hooks';
 import {serverStore} from '../../store';
 import {L10nContext} from '../../utils';
 import {parseTimeoutMs} from '../../utils/timeout';
-import {SERVER_TYPE_DROPDOWN_OPTIONS} from '../../utils/serverTypes';
+import {
+  SERVER_TYPE_DROPDOWN_OPTIONS,
+  ServerType,
+  toServerType,
+} from '../../utils/serverTypes';
 import {testConnection} from '../../api/openai';
 import {t} from '../../locales';
 
@@ -45,7 +49,7 @@ export const ServerDetailsSheet: React.FC<ServerDetailsSheetProps> = observer(
     const [url, setUrl] = useState('');
     const [apiKey, setApiKey] = useState('');
     const [timeoutSeconds, setTimeoutSeconds] = useState('');
-    const [serverType, setServerType] = useState('unknown');
+    const [serverType, setServerType] = useState<ServerType>('unknown');
     const [secureTextEntry, setSecureTextEntry] = useState(true);
     const [isProbing, setIsProbing] = useState(false);
     const [probeResult, setProbeResult] = useState<{
@@ -154,8 +158,15 @@ export const ServerDetailsSheet: React.FC<ServerDetailsSheetProps> = observer(
       }
       setIsSaving(true);
       try {
+        const nextUrl = url.trim();
+        // updateServer drops the discovered model list when the url or the type
+        // changes, and nothing else refetches it until the app is foregrounded:
+        // an empty list leaves every capability gate reading 'unknown'.
+        const discoveryInvalidated =
+          nextUrl !== server.url ||
+          toServerType(serverType) !== toServerType(server.serverType);
         serverStore.updateServer(serverId, {
-          url: url.trim(),
+          url: nextUrl,
           requestTimeoutMs: parseTimeoutMs(timeoutSeconds),
           serverType,
         });
@@ -163,6 +174,9 @@ export const ServerDetailsSheet: React.FC<ServerDetailsSheetProps> = observer(
           await serverStore.setApiKey(serverId, apiKey.trim());
         } else {
           await serverStore.removeApiKey(serverId);
+        }
+        if (discoveryInvalidated) {
+          await serverStore.fetchModelsForServer(serverId);
         }
         onDismiss();
       } finally {
@@ -251,7 +265,7 @@ export const ServerDetailsSheet: React.FC<ServerDetailsSheetProps> = observer(
               testID="server-type-dropdown"
               value={serverType}
               options={SERVER_TYPE_DROPDOWN_OPTIONS}
-              onChange={setServerType}
+              onChange={value => setServerType(toServerType(value))}
             />
             <Text style={styles.apiKeyDescription}>
               {l10n.settings.serverTypeHelp}
